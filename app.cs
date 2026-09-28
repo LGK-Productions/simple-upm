@@ -4,6 +4,7 @@
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
@@ -39,7 +40,8 @@ foreach (var path in Directory.EnumerateFiles(Directory.GetCurrentDirectory(), "
     if (manifest is null)
         continue;
 
-    (CollectionsMarshal.GetValueRefOrAddDefault(packages, manifest.Name, out _) ??= [])[manifest.Version] = new(path, manifest);
+    var checksum = BuildChecksum(path);
+    (CollectionsMarshal.GetValueRefOrAddDefault(packages, manifest.Name, out _) ??= [])[manifest.Version] = new(path, manifest, checksum);
 
     logger.LogDebug("Registered package '{PackageName}@{Version}'", manifest.Name, manifest.Version);
 }
@@ -95,8 +97,15 @@ static PackageManifest? ReadManifest(string path)
     return null;
 }
 
+static string BuildChecksum(string path)
+{
+    using var stream = File.OpenRead(path);
+    byte[] hash = SHA1.HashData(stream);
+    return Convert.ToHexStringLower(hash);
+}
+
 sealed class PackageInfo : Dictionary<SemanticVersion, PackageVersionInfo>;
-sealed record PackageVersionInfo(string Path, PackageManifest Manifest)
+sealed record PackageVersionInfo(string Path, PackageManifest Manifest, string Checksum)
 {
     public SemanticVersion Version => Manifest.Version;
 }
@@ -126,7 +135,7 @@ sealed record PackageIndex(
             Id: packageName,
             Name: packageName,
             tags,
-            Versions: versions.Select(version => PackageVersion.Create(baseUrl, version.Manifest))
+            Versions: versions.Select(version => PackageVersion.Create(baseUrl, version.Manifest, version.Checksum))
                 .ToDictionary(x => x.Version)
         );
     }
@@ -135,27 +144,37 @@ sealed record PackageIndex(
 sealed record PackageVersion(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("version")] SemanticVersion Version,
-    [property: JsonPropertyName("dist")] Dictionary<string, Uri> Distribution
+    [property: JsonPropertyName("dist")] Distribution Distribution
 )
 {
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement> ExtensionData { get; set; } = [];
 
-    public static PackageVersion Create(Uri baseUrl, PackageManifest manifest)
+    public static PackageVersion Create(Uri baseUrl, PackageManifest manifest, string checksum)
     {
         return new(
             Name: manifest.Name,
             Version: manifest.Version,
             Distribution: new()
             {
-                { "tarball", new Uri(baseUrl, $"/{manifest.Name}/-/{manifest.Version}.tgz") }
+                TarballUrl = new Uri(baseUrl, $"/{manifest.Name}/-/{manifest.Version}.tgz"),
+                Checksum = checksum,
             }
         )
         {
             ExtensionData = manifest.ExtensionData
         };
     }
+}
+
+sealed record Distribution
+{
+    [JsonPropertyName("tarball")]
+    public required Uri TarballUrl { get; init; }
+
+    [JsonPropertyName("shasum")]
+    public required string Checksum { get; init; }
 }
 
 [JsonSerializable(typeof(PackageManifest))]
