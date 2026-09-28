@@ -33,7 +33,7 @@ else
 }
 
 Dictionary<string, PackageInfo> packages = [];
-foreach (var path in Directory.EnumerateFiles(".", "*@*.tgz"))
+foreach (var path in Directory.EnumerateFiles(Directory.GetCurrentDirectory(), "*.tgz"))
 {
     var manifest = ReadManifest(path);
     if (manifest is null)
